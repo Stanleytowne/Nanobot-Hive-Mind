@@ -53,3 +53,24 @@ def get_bridge_install_dir() -> Path:
 def get_legacy_sessions_dir() -> Path:
     """Return the legacy global session directory used for migration fallback."""
     return Path.home() / ".nanobot" / "sessions"
+
+
+def get_agents_dir(workspace: str | None = None) -> Path:
+    """Return and ensure the agents directory under the workspace."""
+    ws = get_workspace_path(workspace)
+    return ensure_dir(ws / "agents")
+
+
+def get_agent_workspace(workspace: str | None = None, agent_name: str = "") -> Path:
+    """Return and ensure the workspace directory for a specific agent."""
+    return ensure_dir(get_agents_dir(workspace) / agent_name)
+
+
+def get_agent_sessions_dir(workspace: str | None = None, agent_name: str = "") -> Path:
+    """Return and ensure the sessions directory for a specific agent."""
+    return ensure_dir(get_agent_workspace(workspace, agent_name) / "sessions")
+
+
+def get_agent_memory_dir(workspace: str | None = None, agent_name: str = "") -> Path:
+    """Return and ensure the memory directory for a specific agent."""
+    return ensure_dir(get_agent_workspace(workspace, agent_name) / "memory")

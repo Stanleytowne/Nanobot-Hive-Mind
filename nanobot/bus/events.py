@@ -17,6 +17,8 @@ class InboundMessage:
     media: list[str] = field(default_factory=list)  # Media URLs
     metadata: dict[str, Any] = field(default_factory=dict)  # Channel-specific data
     session_key_override: str | None = None  # Optional override for thread-scoped sessions
+    source_agent: str | None = None  # Agent that sent this message (inter-agent)
+    target_agent: str | None = None  # Agent this message is destined for
 
     @property
     def session_key(self) -> str:
@@ -34,5 +36,5 @@ class OutboundMessage:
     reply_to: str | None = None
     media: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
-
-
+    target_agent: str | None = None  # Target agent for inter-agent routing
+    type: str = "message"  # "message" or "notification"

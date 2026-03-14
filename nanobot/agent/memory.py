@@ -58,6 +58,7 @@ def _normalize_save_memory_args(args: Any) -> dict[str, Any] | None:
         return args[0] if args and isinstance(args[0], dict) else None
     return args if isinstance(args, dict) else None
 
+
 _TOOL_CHOICE_ERROR_MARKERS = (
     "tool_choice",
     "toolchoice",
@@ -77,11 +78,18 @@ class MemoryStore:
 
     _MAX_FAILURES_BEFORE_RAW_ARCHIVE = 3
 
-    def __init__(self, workspace: Path):
-        self.memory_dir = ensure_dir(workspace / "memory")
+    def __init__(self, workspace: Path, memory_dir: Path | None = None):
+        self.memory_dir = ensure_dir(memory_dir or (workspace / "memory"))
         self.memory_file = self.memory_dir / "MEMORY.md"
         self.history_file = self.memory_dir / "HISTORY.md"
         self._consecutive_failures = 0
+
+        # For specialist agents: shared global memory is readable alongside private memory
+        self._shared_memory_dir: Path | None = None
+        if memory_dir and memory_dir != workspace / "memory":
+            shared = workspace / "memory"
+            if shared.exists():
+                self._shared_memory_dir = shared
 
     def read_long_term(self) -> str:
         if self.memory_file.exists():
@@ -96,8 +104,23 @@ class MemoryStore:
             f.write(entry.rstrip() + "\n\n")
 
     def get_memory_context(self) -> str:
+        parts = []
+
+        # Shared global memory (read-only for specialists)
+        if self._shared_memory_dir:
+            shared_file = self._shared_memory_dir / "MEMORY.md"
+            if shared_file.exists():
+                shared = shared_file.read_text(encoding="utf-8").strip()
+                if shared:
+                    parts.append(f"## Shared Memory (global)\n{shared}")
+
+        # Agent-private memory (or global memory in single-agent mode)
         long_term = self.read_long_term()
-        return f"## Long-term Memory\n{long_term}" if long_term else ""
+        if long_term:
+            label = "Agent Memory (private)" if self._shared_memory_dir else "Long-term Memory"
+            parts.append(f"## {label}\n{long_term}")
+
+        return "\n\n".join(parts)
 
     @staticmethod
     def _format_messages(messages: list[dict]) -> str:
@@ -105,7 +128,9 @@ class MemoryStore:
         for message in messages:
             if not message.get("content"):
                 continue
-            tools = f" [tools: {', '.join(message['tools_used'])}]" if message.get("tools_used") else ""
+            tools = (
+                f" [tools: {', '.join(message['tools_used'])}]" if message.get("tools_used") else ""
+            )
             lines.append(
                 f"[{message.get('timestamp', '?')[:16]}] {message['role'].upper()}{tools}: {message['content']}"
             )
@@ -131,7 +156,10 @@ class MemoryStore:
 {self._format_messages(messages)}"""
 
         chat_messages = [
-            {"role": "system", "content": "You are a memory consolidation agent. Call the save_memory tool with your consolidation of the conversation."},
+            {
+                "role": "system",
+                "content": "You are a memory consolidation agent. Call the save_memory tool with your consolidation of the conversation.",
+            },
             {"role": "user", "content": prompt},
         ]
 
@@ -144,9 +172,7 @@ class MemoryStore:
                 tool_choice=forced,
             )
 
-            if response.finish_reason == "error" and _is_tool_choice_unsupported(
-                response.content
-            ):
+            if response.finish_reason == "error" and _is_tool_choice_unsupported(response.content):
                 logger.warning("Forced tool_choice unsupported, retrying with auto")
                 response = await provider.chat_with_retry(
                     messages=chat_messages,
@@ -178,7 +204,9 @@ class MemoryStore:
             update = args["memory_update"]
 
             if entry is None or update is None:
-                logger.warning("Memory consolidation: save_memory payload contains null required fields")
+                logger.warning(
+                    "Memory consolidation: save_memory payload contains null required fields"
+                )
                 return self._fail_or_raw_archive(messages)
 
             entry = _ensure_text(entry).strip()
@@ -211,12 +239,9 @@ class MemoryStore:
         """Fallback: dump raw messages to HISTORY.md without LLM summarization."""
         ts = datetime.now().strftime("%Y-%m-%d %H:%M")
         self.append_history(
-            f"[{ts}] [RAW] {len(messages)} messages\n"
-            f"{self._format_messages(messages)}"
+            f"[{ts}] [RAW] {len(messages)} messages\n{self._format_messages(messages)}"
         )
-        logger.warning(
-            "Memory consolidation degraded: raw-archived {} messages", len(messages)
-        )
+        logger.warning("Memory consolidation degraded: raw-archived {} messages", len(messages))
 
 
 class MemoryConsolidator:
@@ -233,8 +258,9 @@ class MemoryConsolidator:
         context_window_tokens: int,
         build_messages: Callable[..., list[dict[str, Any]]],
         get_tool_definitions: Callable[[], list[dict[str, Any]]],
+        memory_dir: Path | None = None,
     ):
-        self.store = MemoryStore(workspace)
+        self.store = MemoryStore(workspace, memory_dir=memory_dir)
         self.provider = provider
         self.model = model
         self.sessions = sessions
@@ -276,7 +302,7 @@ class MemoryConsolidator:
     def estimate_session_prompt_tokens(self, session: Session) -> tuple[int, str]:
         """Estimate current prompt size for the normal session history view."""
         history = session.get_history(max_messages=0)
-        channel, chat_id = (session.key.split(":", 1) if ":" in session.key else (None, None))
+        channel, chat_id = session.key.split(":", 1) if ":" in session.key else (None, None)
         probe_messages = self._build_messages(
             history=history,
             current_message="[token-probe]",
@@ -294,7 +320,7 @@ class MemoryConsolidator:
         """Archive the full unconsolidated tail for /new-style session rollover."""
         lock = self.get_lock(session.key)
         async with lock:
-            snapshot = session.messages[session.last_consolidated:]
+            snapshot = session.messages[session.last_consolidated :]
             if not snapshot:
                 return True
             return await self.consolidate_messages(snapshot)
@@ -334,7 +360,7 @@ class MemoryConsolidator:
                     return
 
                 end_idx = boundary[0]
-                chunk = session.messages[session.last_consolidated:end_idx]
+                chunk = session.messages[session.last_consolidated : end_idx]
                 if not chunk:
                     return
 

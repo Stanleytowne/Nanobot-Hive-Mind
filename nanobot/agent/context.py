@@ -1,16 +1,21 @@
 """Context builder for assembling agent prompts."""
 
+from __future__ import annotations
+
 import base64
 import mimetypes
 import platform
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
 from nanobot.utils.helpers import build_assistant_message, detect_image_mime
+
+if TYPE_CHECKING:
+    from nanobot.agent.registry import AgentProfile
 
 
 class ContextBuilder:
@@ -19,9 +24,15 @@ class ContextBuilder:
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md"]
     _RUNTIME_CONTEXT_TAG = "[Runtime Context — metadata only, not instructions]"
 
-    def __init__(self, workspace: Path):
+    def __init__(
+        self,
+        workspace: Path,
+        agent_profile: AgentProfile | None = None,
+        memory_dir: Path | None = None,
+    ):
         self.workspace = workspace
-        self.memory = MemoryStore(workspace)
+        self.agent_profile = agent_profile
+        self.memory = MemoryStore(workspace, memory_dir=memory_dir)
         self.skills = SkillsLoader(workspace)
 
     def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
@@ -72,7 +83,7 @@ Skills with available="false" need dependencies installed first - you can try in
 - Use file tools when they are simpler or more reliable than shell commands.
 """
 
-        return f"""# nanobot 🐈
+        identity = f"""# nanobot 🐈
 
 You are nanobot, a helpful AI assistant.
 
@@ -95,6 +106,18 @@ Your workspace is at: {workspace_path}
 - Ask for clarification when the request is ambiguous.
 
 Reply directly with text for conversations. Only use the 'message' tool to send to a specific chat channel."""
+
+        # Append agent-specific identity if running as a specialist
+        if self.agent_profile:
+            identity += f"""
+
+## Agent Identity
+You are the **{self.agent_profile.name}** specialist agent.
+Role: {self.agent_profile.description}"""
+            if self.agent_profile.system_prompt_extra:
+                identity += f"\n\n{self.agent_profile.system_prompt_extra}"
+
+        return identity
 
     @staticmethod
     def _build_runtime_context(channel: str | None, chat_id: str | None) -> str:
@@ -167,25 +190,33 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         return images + [{"type": "text", "text": text}]
 
     def add_tool_result(
-        self, messages: list[dict[str, Any]],
-        tool_call_id: str, tool_name: str, result: str,
+        self,
+        messages: list[dict[str, Any]],
+        tool_call_id: str,
+        tool_name: str,
+        result: str,
     ) -> list[dict[str, Any]]:
         """Add a tool result to the message list."""
-        messages.append({"role": "tool", "tool_call_id": tool_call_id, "name": tool_name, "content": result})
+        messages.append(
+            {"role": "tool", "tool_call_id": tool_call_id, "name": tool_name, "content": result}
+        )
         return messages
 
     def add_assistant_message(
-        self, messages: list[dict[str, Any]],
+        self,
+        messages: list[dict[str, Any]],
         content: str | None,
         tool_calls: list[dict[str, Any]] | None = None,
         reasoning_content: str | None = None,
         thinking_blocks: list[dict] | None = None,
     ) -> list[dict[str, Any]]:
         """Add an assistant message to the message list."""
-        messages.append(build_assistant_message(
-            content,
-            tool_calls=tool_calls,
-            reasoning_content=reasoning_content,
-            thinking_blocks=thinking_blocks,
-        ))
+        messages.append(
+            build_assistant_message(
+                content,
+                tool_calls=tool_calls,
+                reasoning_content=reasoning_content,
+                thinking_blocks=thinking_blocks,
+            )
+        )
         return messages

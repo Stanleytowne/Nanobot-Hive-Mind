@@ -33,7 +33,9 @@ class TelegramConfig(Base):
         None  # HTTP/SOCKS5 proxy URL, e.g. "http://127.0.0.1:7890" or "socks5://127.0.0.1:1080"
     )
     reply_to_message: bool = False  # If true, bot replies quote the original message
-    group_policy: Literal["open", "mention"] = "mention"  # "mention" responds when @mentioned or replied to, "open" responds to all
+    group_policy: Literal["open", "mention"] = (
+        "mention"  # "mention" responds when @mentioned or replied to, "open" responds to all
+    )
 
 
 class FeishuConfig(Base):
@@ -48,7 +50,9 @@ class FeishuConfig(Base):
     react_emoji: str = (
         "THUMBSUP"  # Emoji type for message reactions (e.g. THUMBSUP, OK, DONE, SMILE)
     )
-    group_policy: Literal["open", "mention"] = "mention"  # "mention" responds when @mentioned, "open" responds to all
+    group_policy: Literal["open", "mention"] = (
+        "mention"  # "mention" responds when @mentioned, "open" responds to all
+    )
 
 
 class DingTalkConfig(Base):
@@ -248,13 +252,34 @@ class AgentDefaults(Base):
     @property
     def should_warn_deprecated_memory_window(self) -> bool:
         """Return True when old memoryWindow is present without contextWindowTokens."""
-        return self.memory_window is not None and "context_window_tokens" not in self.model_fields_set
+        return (
+            self.memory_window is not None and "context_window_tokens" not in self.model_fields_set
+        )
+
+
+class RoutingRule(Base):
+    """Deterministic routing rule for the orchestrator."""
+
+    pattern: str  # regex pattern for task matching
+    agent_name: str  # target agent category
+
+
+class OrchestratorConfig(Base):
+    """Orchestrator configuration for multi-agent mode."""
+
+    enabled: bool = False
+    idle_timeout_minutes: int = 60
+    max_specialists: int = 10
+    routing_rules: list[RoutingRule] = Field(default_factory=list)
+    router_model: str = ""  # cheap model for routing decisions (defaults to agents.defaults.model)
+    models: list[str] = Field(default_factory=list)  # available models, sorted cheapest to most expensive
 
 
 class AgentsConfig(Base):
     """Agent configuration."""
 
     defaults: AgentDefaults = Field(default_factory=AgentDefaults)
+    orchestrator: OrchestratorConfig = Field(default_factory=OrchestratorConfig)
 
 
 class ProviderConfig(Base):
@@ -269,7 +294,9 @@ class ProvidersConfig(Base):
     """Configuration for LLM providers."""
 
     custom: ProviderConfig = Field(default_factory=ProviderConfig)  # Any OpenAI-compatible endpoint
-    azure_openai: ProviderConfig = Field(default_factory=ProviderConfig)  # Azure OpenAI (model = deployment name)
+    azure_openai: ProviderConfig = Field(
+        default_factory=ProviderConfig
+    )  # Azure OpenAI (model = deployment name)
     anthropic: ProviderConfig = Field(default_factory=ProviderConfig)
     openai: ProviderConfig = Field(default_factory=ProviderConfig)
     openrouter: ProviderConfig = Field(default_factory=ProviderConfig)
@@ -285,9 +312,15 @@ class ProvidersConfig(Base):
     aihubmix: ProviderConfig = Field(default_factory=ProviderConfig)  # AiHubMix API gateway
     siliconflow: ProviderConfig = Field(default_factory=ProviderConfig)  # SiliconFlow (硅基流动)
     volcengine: ProviderConfig = Field(default_factory=ProviderConfig)  # VolcEngine (火山引擎)
-    volcengine_coding_plan: ProviderConfig = Field(default_factory=ProviderConfig)  # VolcEngine Coding Plan
-    byteplus: ProviderConfig = Field(default_factory=ProviderConfig)  # BytePlus (VolcEngine international)
-    byteplus_coding_plan: ProviderConfig = Field(default_factory=ProviderConfig)  # BytePlus Coding Plan
+    volcengine_coding_plan: ProviderConfig = Field(
+        default_factory=ProviderConfig
+    )  # VolcEngine Coding Plan
+    byteplus: ProviderConfig = Field(
+        default_factory=ProviderConfig
+    )  # BytePlus (VolcEngine international)
+    byteplus_coding_plan: ProviderConfig = Field(
+        default_factory=ProviderConfig
+    )  # BytePlus Coding Plan
     openai_codex: ProviderConfig = Field(default_factory=ProviderConfig)  # OpenAI Codex (OAuth)
     github_copilot: ProviderConfig = Field(default_factory=ProviderConfig)  # Github Copilot (OAuth)
 
