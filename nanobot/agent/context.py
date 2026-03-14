@@ -124,14 +124,17 @@ Role: {self.agent_profile.description}
 
 ## Agent Memory
 You have two memory layers — use BOTH proactively:
-- **Private memory** (`{agent_mem_path}/MEMORY.md`): Save task-specific knowledge, decisions, and context relevant to your specialty. This is YOUR memory — other agents cannot see it.
-- **Shared memory** (`{workspace_path}/memory/MEMORY.md`): Read-only. Contains user profile and facts shared across all agents.
+- **Private memory** (`{agent_mem_path}/MEMORY.md`): Save task-specific knowledge, decisions, and context relevant to YOUR specialty. Other agents cannot see this.
+- **Shared memory** (`{workspace_path}/memory/MEMORY.md`): Visible to ALL agents. Save user facts, preferences, and cross-cutting knowledge here so other agents benefit too.
 
-**When to save to private memory** (do this EVERY time):
-1. After completing a coding task → save what was built, key design decisions, file paths
+**When to save to private memory:**
+1. After completing a task → save what was done, key decisions, file paths
 2. After a multi-turn conversation → summarize the topic and current state
-3. When you learn something about the user's project → save technical context
-4. At the START of a complex task → read your private memory first for prior context
+3. At the START of a complex task → read your private memory first for prior context
+
+**When to save to shared memory:**
+1. When you learn something about the user (preferences, timezone, project context)
+2. When you discover information other agents would need (e.g., coding agent learns the project uses microservices → travel/reminder agents may also benefit from knowing the user's work schedule)
 
 Your context is limited and WILL be compressed. Anything not saved to memory files will be lost permanently. Save early and often."""
             if self.agent_profile.system_prompt_extra:
