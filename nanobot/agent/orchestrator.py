@@ -520,7 +520,9 @@ class OrchestratorLoop:
                     agent_name, f"Specialist agent for {agent_name} tasks"
                 )
                 await self._notify_user(
-                    msg, f"Created new agent: [{agent_name}] — {profile.description}"
+                    msg,
+                    f"Created new agent: [{agent_name}] — {profile.description}\n"
+                    f"  Router: {self._router_model_display()} | Agent: {self._agent_model_display(profile)}",
                 )
             await self._notify_user(msg, f"→ {agent_name}")
             return [(agent_name, task_content)]
@@ -597,19 +599,23 @@ class OrchestratorLoop:
                             a_name = new_parts or "general"
                             a_desc = f"Handles {a_name} tasks"
                         a_name = a_name.strip()
-                        await self.registry.get_or_create(a_name, a_desc.strip())
+                        profile = await self.registry.get_or_create(a_name, a_desc.strip())
                         await self._notify_user(
-                            msg, f"Created new agent: [{a_name}] — {a_desc.strip()}"
+                            msg,
+                            f"Created new agent: [{a_name}] — {a_desc.strip()}\n"
+                            f"  Router: {self._router_model_display()} | Agent: {self._agent_model_display(profile)}",
                         )
                         agent_part = a_name
                     else:
                         # Ensure agent exists
                         if not self.registry.get(agent_part):
-                            await self.registry.get_or_create(
+                            profile = await self.registry.get_or_create(
                                 agent_part, f"Specialist agent for {agent_part} tasks"
                             )
                             await self._notify_user(
-                                msg, f"Created new agent: [{agent_part}]"
+                                msg,
+                                f"Created new agent: [{agent_part}]\n"
+                                f"  Router: {self._router_model_display()} | Agent: {self._agent_model_display(profile)}",
                             )
 
                     await self._notify_user(msg, f"→ {agent_part}")
@@ -673,9 +679,11 @@ class OrchestratorLoop:
                     ))
                     return []
 
-                await self.registry.get_or_create(agent_name, description)
+                profile = await self.registry.get_or_create(agent_name, description)
                 await self._notify_user(
-                    msg, f"Created new agent: [{agent_name}] — {description}"
+                    msg,
+                    f"Created new agent: [{agent_name}] — {description}\n"
+                    f"  Router: {self._router_model_display()} | Agent: {self._agent_model_display(profile)}",
                 )
             elif result:
                 agent_name = result
@@ -692,7 +700,9 @@ class OrchestratorLoop:
                 agent_name, f"Specialist agent for {agent_name} tasks"
             )
             await self._notify_user(
-                msg, f"Created new agent: [{agent_name}] — {profile.description}"
+                msg,
+                f"Created new agent: [{agent_name}] — {profile.description}\n"
+                f"  Router: {self._router_model_display()} | Agent: {self._agent_model_display(profile)}",
             )
 
         await self._notify_user(msg, f"→ {agent_name}")
@@ -751,6 +761,21 @@ class OrchestratorLoop:
     # ------------------------------------------------------------------
     # User notifications
     # ------------------------------------------------------------------
+
+    def _agent_model_display(self, profile=None) -> str:
+        """Return the short model name a specialist will use."""
+        model = None
+        if profile and profile.model:
+            model = profile.model
+        if not model:
+            model = self._resolve_model_hint(self.router.last_model_hint)
+        if not model:
+            model = self.available_models[0] if self.available_models else self.model
+        return model.split("/")[-1]
+
+    def _router_model_display(self) -> str:
+        """Return the short model name used by the router."""
+        return self.router_model.split("/")[-1]
 
     async def _notify_user(self, msg: InboundMessage, text: str) -> None:
         """Send a lightweight notification to the user."""
