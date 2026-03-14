@@ -592,13 +592,22 @@ def gateway(
             """Factory for creating specialist AgentLoop instances."""
             from nanobot.agent.loop import AgentLoop as SpecialistLoop
 
+            agent_model = profile.model or config.agents.defaults.model
+            # Resolve per-model context window from orchestrator config
+            ctx_window = config.agents.defaults.context_window_tokens
+            if orch_cfg and orch_cfg.model_context_windows:
+                for key, val in orch_cfg.model_context_windows.items():
+                    if key == agent_model or key.split("/")[-1] == agent_model.split("/")[-1] or key in agent_model:
+                        ctx_window = val
+                        break
+
             loop = SpecialistLoop(
                 bus=bus,
                 provider=provider,
                 workspace=config.workspace_path,
-                model=profile.model or config.agents.defaults.model,
+                model=agent_model,
                 max_iterations=config.agents.defaults.max_tool_iterations,
-                context_window_tokens=config.agents.defaults.context_window_tokens,
+                context_window_tokens=ctx_window,
                 web_search_config=config.tools.web.search,
                 web_proxy=config.tools.web.proxy or None,
                 exec_config=config.tools.exec,

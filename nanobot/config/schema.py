@@ -67,6 +67,9 @@ class OrchestratorConfig(Base):
     routing_rules: list[RoutingRule] = Field(default_factory=list)
     router_model: str = ""  # cheap model for routing decisions (defaults to agents.defaults.model)
     models: list[str] = Field(default_factory=list)  # available models, sorted cheapest to most expensive
+    # Per-model context window overrides: {"model_name": token_count}
+    # Falls back to agents.defaults.context_window_tokens if not specified
+    model_context_windows: dict[str, int] = Field(default_factory=dict)
 
 
 class AgentsConfig(Base):

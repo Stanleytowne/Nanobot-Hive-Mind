@@ -96,6 +96,11 @@ Your workspace is at: {workspace_path}
 - History log: {workspace_path}/memory/HISTORY.md (grep-searchable). Each entry starts with [YYYY-MM-DD HH:MM].
 - Custom skills: {workspace_path}/skills/{{skill-name}}/SKILL.md
 
+## Memory Guidelines
+- **Proactively save** important facts, user preferences, and task outcomes to your memory files.
+- Write to `memory/MEMORY.md` for persistent facts that should survive across conversations.
+- Your context window is limited. Information not saved to memory files will be lost when context is full.
+
 {platform_policy}
 
 ## nanobot Guidelines
@@ -109,11 +114,19 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
 
         # Append agent-specific identity if running as a specialist
         if self.agent_profile:
+            agent_mem_path = f"{workspace_path}/agents/{self.agent_profile.name}/memory"
             identity += f"""
 
 ## Agent Identity
 You are the **{self.agent_profile.name}** specialist agent.
-Role: {self.agent_profile.description}"""
+Role: {self.agent_profile.description}
+
+## Agent Memory
+You have two memory layers — use BOTH proactively:
+- **Private memory** (`{agent_mem_path}/MEMORY.md`): Save task-specific knowledge, code snippets, decisions, and context relevant to your specialty. This is YOUR memory — other agents cannot see it.
+- **Shared memory** (`{workspace_path}/memory/MEMORY.md`): Read-only. Contains user profile and facts shared across all agents.
+
+IMPORTANT: Before your context fills up, save important information to your private memory file. Summarize key findings, decisions, and any context you would need to continue the conversation later."""
             if self.agent_profile.system_prompt_extra:
                 identity += f"\n\n{self.agent_profile.system_prompt_extra}"
 

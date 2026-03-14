@@ -178,6 +178,8 @@ class OrchestratorLoop:
         self.router_model = (orch_cfg.router_model if orch_cfg else "") or self.model
         # Models sorted cheapest → most expensive; router picks based on task complexity
         self.available_models = (orch_cfg.models if orch_cfg else []) or [self.model]
+        # Per-model context window overrides
+        self.model_context_windows = (orch_cfg.model_context_windows if orch_cfg else {}) or {}
 
         self._create_specialist_loop = create_specialist_loop
 
@@ -421,6 +423,20 @@ class OrchestratorLoop:
                 return await self._classify_and_prepare(msg)
             finally:
                 self._current_msg = None
+
+    def resolve_context_window(self, model: str | None) -> int | None:
+        """Return the context window override for a model, or None to use default."""
+        if not model or not self.model_context_windows:
+            return None
+        # Try exact match first
+        if model in self.model_context_windows:
+            return self.model_context_windows[model]
+        # Try matching by short name (after last /)
+        short = model.split("/")[-1]
+        for key, val in self.model_context_windows.items():
+            if key.split("/")[-1] == short or key in model:
+                return val
+        return None
 
     def _resolve_model_hint(self, hint: str | None) -> str | None:
         """Resolve a model hint (index or name) to an actual model name."""
