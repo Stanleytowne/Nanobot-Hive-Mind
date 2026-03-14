@@ -574,10 +574,15 @@ class AgentLoop:
         chat_id: str = "direct",
         on_progress: Callable[[str], Awaitable[None]] | None = None,
     ) -> str:
-        """Process a message directly (for CLI or cron usage)."""
+        """Process a message directly (for CLI, cron, or orchestrator usage).
+
+        Serialized via _processing_lock so concurrent dispatches to the same
+        agent are queued rather than racing on the same session.
+        """
         await self._connect_mcp()
         msg = InboundMessage(channel=channel, sender_id="user", chat_id=chat_id, content=content)
-        response = await self._process_message(
-            msg, session_key=session_key, on_progress=on_progress
-        )
+        async with self._processing_lock:
+            response = await self._process_message(
+                msg, session_key=session_key, on_progress=on_progress
+            )
         return response.content if response else ""
