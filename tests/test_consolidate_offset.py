@@ -516,8 +516,8 @@ class TestNewCommandArchival:
         loop.sessions.save(session)
         before_count = len(session.messages)
 
-        async def _failing_consolidate(_messages) -> bool:
-            return False
+        async def _failing_consolidate(_messages) -> tuple[bool, str]:
+            return False, ""
 
         loop.memory_consolidator.consolidate_messages = _failing_consolidate  # type: ignore[method-assign]
 
@@ -542,10 +542,10 @@ class TestNewCommandArchival:
 
         archived_count = -1
 
-        async def _fake_consolidate(messages) -> bool:
+        async def _fake_consolidate(messages) -> tuple[bool, str]:
             nonlocal archived_count
             archived_count = len(messages)
-            return True
+            return True, ""
 
         loop.memory_consolidator.consolidate_messages = _fake_consolidate  # type: ignore[method-assign]
 
@@ -567,8 +567,8 @@ class TestNewCommandArchival:
             session.add_message("assistant", f"resp{i}")
         loop.sessions.save(session)
 
-        async def _ok_consolidate(_messages) -> bool:
-            return True
+        async def _ok_consolidate(_messages) -> tuple[bool, str]:
+            return True, ""
 
         loop.memory_consolidator.consolidate_messages = _ok_consolidate  # type: ignore[method-assign]
 

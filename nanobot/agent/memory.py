@@ -37,8 +37,16 @@ _SAVE_MEMORY_TOOL = [
                         "description": "Full updated long-term memory as markdown. Include all existing "
                         "facts plus new ones. Return unchanged if nothing new.",
                     },
+                    "conversation_summary": {
+                        "type": "string",
+                        "description": "A concise summary of the conversation state for continuity. "
+                        "Include: what tasks were being worked on, key decisions made, current "
+                        "progress, what was discussed, and any pending next steps. Write in "
+                        "second person ('You were working on...'). This will be shown to the "
+                        "agent as context when the conversation continues.",
+                    },
                 },
-                "required": ["history_entry", "memory_update"],
+                "required": ["history_entry", "memory_update", "conversation_summary"],
             },
         },
     }
@@ -141,10 +149,15 @@ class MemoryStore:
         messages: list[dict],
         provider: LLMProvider,
         model: str,
-    ) -> bool:
-        """Consolidate the provided message chunk into MEMORY.md + HISTORY.md."""
+    ) -> tuple[bool, str]:
+        """Consolidate the provided message chunk into MEMORY.md + HISTORY.md.
+
+        Returns:
+            (success, conversation_summary) — the summary is injected into the
+            session as a compaction block so the agent retains conversation state.
+        """
         if not messages:
-            return True
+            return True, ""
 
         current_memory = self.read_long_term()
         prompt = f"""Process this conversation and call the save_memory tool with your consolidation.
@@ -189,16 +202,19 @@ class MemoryStore:
                     len(response.content or ""),
                     (response.content or "")[:200],
                 )
-                return self._fail_or_raw_archive(messages)
+                ok = self._fail_or_raw_archive(messages)
+                return ok, ""
 
             args = _normalize_save_memory_args(response.tool_calls[0].arguments)
             if args is None:
                 logger.warning("Memory consolidation: unexpected save_memory arguments")
-                return self._fail_or_raw_archive(messages)
+                ok = self._fail_or_raw_archive(messages)
+                return ok, ""
 
             if "history_entry" not in args or "memory_update" not in args:
                 logger.warning("Memory consolidation: save_memory payload missing required fields")
-                return self._fail_or_raw_archive(messages)
+                ok = self._fail_or_raw_archive(messages)
+                return ok, ""
 
             entry = args["history_entry"]
             update = args["memory_update"]
@@ -207,24 +223,34 @@ class MemoryStore:
                 logger.warning(
                     "Memory consolidation: save_memory payload contains null required fields"
                 )
-                return self._fail_or_raw_archive(messages)
+                ok = self._fail_or_raw_archive(messages)
+                return ok, ""
 
             entry = _ensure_text(entry).strip()
             if not entry:
                 logger.warning("Memory consolidation: history_entry is empty after normalization")
-                return self._fail_or_raw_archive(messages)
+                ok = self._fail_or_raw_archive(messages)
+                return ok, ""
 
             self.append_history(entry)
             update = _ensure_text(update)
             if update != current_memory:
                 self.write_long_term(update)
 
+            # Extract conversation summary (new field, optional for backward compat)
+            summary = _ensure_text(args.get("conversation_summary", "")).strip()
+
             self._consecutive_failures = 0
-            logger.info("Memory consolidation done for {} messages", len(messages))
-            return True
+            logger.info(
+                "Memory consolidation done for {} messages (summary={}chars)",
+                len(messages),
+                len(summary),
+            )
+            return True, summary
         except Exception:
             logger.exception("Memory consolidation failed")
-            return self._fail_or_raw_archive(messages)
+            ok = self._fail_or_raw_archive(messages)
+            return ok, ""
 
     def _fail_or_raw_archive(self, messages: list[dict]) -> bool:
         """Increment failure count; after threshold, raw-archive messages and return True."""
@@ -273,8 +299,13 @@ class MemoryConsolidator:
         """Return the shared consolidation lock for one session."""
         return self._locks.setdefault(session_key, asyncio.Lock())
 
-    async def consolidate_messages(self, messages: list[dict[str, object]]) -> bool:
-        """Archive a selected message chunk into persistent memory."""
+    async def consolidate_messages(
+        self, messages: list[dict[str, object]]
+    ) -> tuple[bool, str]:
+        """Archive a selected message chunk into persistent memory.
+
+        Returns (success, conversation_summary).
+        """
         return await self.store.consolidate(messages, self.provider, self.model)
 
     def pick_consolidation_boundary(
@@ -323,7 +354,8 @@ class MemoryConsolidator:
             snapshot = session.messages[session.last_consolidated :]
             if not snapshot:
                 return True
-            return await self.consolidate_messages(snapshot)
+            ok, _ = await self.consolidate_messages(snapshot)
+            return ok
 
     async def maybe_consolidate_by_tokens(self, session: Session) -> None:
         """Loop: archive old messages until prompt fits within half the context window."""
@@ -373,9 +405,12 @@ class MemoryConsolidator:
                     source,
                     len(chunk),
                 )
-                if not await self.consolidate_messages(chunk):
+                ok, summary = await self.consolidate_messages(chunk)
+                if not ok:
                     return
                 session.last_consolidated = end_idx
+                if summary:
+                    session.compaction_summary = summary
                 self.sessions.save(session)
 
                 estimated, source = self.estimate_session_prompt_tokens(session)

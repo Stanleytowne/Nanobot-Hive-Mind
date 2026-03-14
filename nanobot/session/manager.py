@@ -20,9 +20,9 @@ class Session:
 
     Stores messages in JSONL format for easy reading and persistence.
 
-    Important: Messages are append-only for LLM cache efficiency.
-    The consolidation process writes summaries to MEMORY.md/HISTORY.md
-    but does NOT modify the messages list or get_history() output.
+    Messages are append-only for LLM cache efficiency.
+    When context overflows, old messages are consolidated and a compaction
+    summary is injected as the first message the agent sees.
     """
 
     key: str  # channel:chat_id
@@ -30,7 +30,8 @@ class Session:
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
     metadata: dict[str, Any] = field(default_factory=dict)
-    last_consolidated: int = 0  # Number of messages already consolidated to files
+    last_consolidated: int = 0  # Number of messages already consolidated
+    compaction_summary: str = ""  # Conversation state summary from last consolidation
 
     def add_message(self, role: str, content: str, **kwargs: Any) -> None:
         """Add a message to the session."""
@@ -39,7 +40,7 @@ class Session:
         self.updated_at = datetime.now()
 
     def get_history(self, max_messages: int = 500) -> list[dict[str, Any]]:
-        """Return unconsolidated messages for LLM input, aligned to a user turn."""
+        """Return messages for LLM input: [compaction summary] + unconsolidated messages."""
         unconsolidated = self.messages[self.last_consolidated :]
         sliced = unconsolidated[-max_messages:]
 
@@ -50,6 +51,22 @@ class Session:
                 break
 
         out: list[dict[str, Any]] = []
+
+        # Inject compaction summary as the first messages if we have one
+        if self.compaction_summary:
+            out.append({
+                "role": "user",
+                "content": (
+                    "[Previous conversation summary — this is automatically generated "
+                    "context from earlier in our conversation]\n\n"
+                    + self.compaction_summary
+                ),
+            })
+            out.append({
+                "role": "assistant",
+                "content": "Understood. I have the context from our previous conversation. Continuing.",
+            })
+
         for m in sliced:
             # Normalize content: some models store null/None for tool-call-only
             # messages, but other models reject null content. Use "" instead.
@@ -65,6 +82,7 @@ class Session:
         """Clear all messages and reset session to initial state."""
         self.messages = []
         self.last_consolidated = 0
+        self.compaction_summary = ""
         self.updated_at = datetime.now()
 
 
@@ -131,6 +149,7 @@ class SessionManager:
             metadata = {}
             created_at = None
             last_consolidated = 0
+            compaction_summary = ""
 
             with open(path, encoding="utf-8") as f:
                 for line in f:
@@ -148,6 +167,7 @@ class SessionManager:
                             else None
                         )
                         last_consolidated = data.get("last_consolidated", 0)
+                        compaction_summary = data.get("compaction_summary", "")
                     else:
                         messages.append(data)
 
@@ -157,6 +177,7 @@ class SessionManager:
                 created_at=created_at or datetime.now(),
                 metadata=metadata,
                 last_consolidated=last_consolidated,
+                compaction_summary=compaction_summary,
             )
         except Exception as e:
             logger.warning("Failed to load session {}: {}", key, e)
@@ -174,6 +195,7 @@ class SessionManager:
                 "updated_at": session.updated_at.isoformat(),
                 "metadata": session.metadata,
                 "last_consolidated": session.last_consolidated,
+                "compaction_summary": session.compaction_summary,
             }
             f.write(json.dumps(metadata_line, ensure_ascii=False) + "\n")
             for msg in session.messages:
