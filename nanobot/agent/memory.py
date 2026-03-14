@@ -357,23 +357,31 @@ class MemoryConsolidator:
             ok, _ = await self.consolidate_messages(snapshot)
             return ok
 
+    # Trigger compaction at 80% of context window (like Claude Code's ~83.5%)
+    # to leave headroom for the next LLM call.
+    _COMPACTION_TRIGGER_RATIO = 0.80
+    # Compress down to 50% of context window.
+    _COMPACTION_TARGET_RATIO = 0.50
+
     async def maybe_consolidate_by_tokens(self, session: Session) -> None:
-        """Loop: archive old messages until prompt fits within half the context window."""
+        """Loop: archive old messages until prompt fits within target ratio of context window."""
         if not session.messages or self.context_window_tokens <= 0:
             return
 
         lock = self.get_lock(session.key)
         async with lock:
-            target = self.context_window_tokens // 2
+            trigger = int(self.context_window_tokens * self._COMPACTION_TRIGGER_RATIO)
+            target = int(self.context_window_tokens * self._COMPACTION_TARGET_RATIO)
             estimated, source = self.estimate_session_prompt_tokens(session)
             if estimated <= 0:
                 return
-            if estimated < self.context_window_tokens:
+            if estimated < trigger:
                 logger.debug(
-                    "Token consolidation idle {}: {}/{} via {}",
+                    "Token consolidation idle {}: {}/{} (trigger={}) via {}",
                     session.key,
                     estimated,
                     self.context_window_tokens,
+                    trigger,
                     source,
                 )
                 return
