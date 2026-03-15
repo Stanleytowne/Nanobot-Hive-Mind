@@ -127,15 +127,16 @@ Set your API key and enable the orchestrator:
   },
   "agents": {
     "defaults": {
-      "model": "anthropic/claude-sonnet-4-20250514"
+      "model": "openai/gpt-oss-120b",
+      "provider": "openrouter"
     },
     "orchestrator": {
       "enabled": true,
-      "routerModel": "google/gemini-2.0-flash-001",
+      "routerModel": "stepfun/step-3.5-flash:free",
       "models": [
-        "google/gemini-2.0-flash-001",
-        "anthropic/claude-sonnet-4-20250514",
-        "anthropic/claude-opus-4-20250514"
+        "openai/gpt-oss-120b",
+        "x-ai/grok-4.1-fast",
+        "moonshotai/kimi-k2.5"
       ],
       "maxSpecialists": 10
     }
@@ -143,7 +144,7 @@ Set your API key and enable the orchestrator:
 }
 ```
 
-The `models` array is sorted cheapest → most expensive. The router assigns model tiers per task and auto-upgrades when needed.
+The `models` array is sorted cheapest → most capable. The router uses a free/cheap model (`step-3.5-flash`) purely for classification, then assigns model tiers per task and auto-upgrades when needed.
 
 **3. Connect a channel and run**
 
