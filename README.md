@@ -182,7 +182,7 @@ The orchestrator's router is an LLM that classifies messages and emits structure
 
 ## Chat Apps
 
-Connect to your preferred chat platform:
+Connect to your preferred chat platform. **Note:** We have only tested Telegram — other channels are inherited from upstream nanobot and may not work correctly with the Hive Mind orchestrator.
 
 | Channel | What you need |
 |---------|---------------|
