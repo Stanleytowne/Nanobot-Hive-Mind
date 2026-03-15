@@ -123,9 +123,17 @@ class TaskRouter:
                     "(chat, Q&A, greetings) and expensive ones for complex tasks (coding, "
                     "analysis, research). If omitted, uses the most capable model.\n\n"
                     "## Model upgrade on dissatisfaction\n\n"
-                    "If the user expresses dissatisfaction with quality (e.g. '写得不好', "
-                    "'not good enough', '太简单了', 'can you do better', '重新写', "
-                    "'quality is poor'), reply with:\n"
+                    "If the user shows signs that the current agent quality is insufficient, "
+                    "reply with __upgrade__:agent_name BEFORE the routing decision.\n\n"
+                    "Upgrade triggers:\n"
+                    "- Explicit dissatisfaction: 'not good enough', 'quality is poor', "
+                    "'写得不好', '太简单了', 'can you do better', '重新写'\n"
+                    "- Repeated debugging: user has been going back and forth fixing the "
+                    "same issue (e.g. 'still broken', 'that didn't work either', "
+                    "'same error again', 'try again')\n"
+                    "- Escalation language: 'use a better model', 'give me something "
+                    "more advanced', 'this needs a smarter approach'\n\n"
+                    "Format:\n"
                     "  __upgrade__:agent_name\n"
                     "  agent_name\n"
                     "This upgrades the agent to the next more powerful model and retries. "
@@ -146,12 +154,18 @@ class TaskRouter:
                 "role": "user",
                 "content": (
                     f"Available agents:\n{agent_list}"
-                    + (f"\n\nAvailable models (0=cheapest, {len(available_models)-1}=most capable):\n"
-                       + "\n".join(f"  {i}: {m}" for i, m in enumerate(available_models))
-                       if available_models and len(available_models) > 1 else "")
+                    + (
+                        f"\n\nAvailable models (0=cheapest, {len(available_models) - 1}=most capable):\n"
+                        + "\n".join(f"  {i}: {m}" for i, m in enumerate(available_models))
+                        if available_models and len(available_models) > 1
+                        else ""
+                    )
                     + f"{history_section}"
-                    + (f"\n\nUser profile/preferences (shared memory):\n{shared_memory}"
-                       if shared_memory else "")
+                    + (
+                        f"\n\nUser profile/preferences (shared memory):\n{shared_memory}"
+                        if shared_memory
+                        else ""
+                    )
                     + f"\n\nNew user message:\n{content}"
                 ),
             },

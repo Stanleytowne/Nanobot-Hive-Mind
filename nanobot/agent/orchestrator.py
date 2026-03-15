@@ -235,7 +235,7 @@ class OrchestratorLoop:
 
             cmd = msg.content.strip().lower()
             cmd_base = cmd.split()[0] if cmd else ""
-            if cmd_base in ("/stop", "/restart", "/new", "/help", "/agents"):
+            if cmd_base in ("/stop", "/restart", "/new", "/help", "/agents", "/model"):
                 if cmd_base == "/new":
                     self._routing_history.pop(msg.session_key, None)
                 task = asyncio.create_task(self._handle_passthrough(msg))
@@ -272,7 +272,7 @@ class OrchestratorLoop:
                 return
 
             # Phase 2: Handle correction — if routing detected a user correction
-            correction_target = getattr(msg, '_correction_cancel_agent', None)
+            correction_target = getattr(msg, "_correction_cancel_agent", None)
             if correction_target:
                 running = self._running_dispatches.get(msg.session_key, {})
                 prev_task = running.get(correction_target)
@@ -281,7 +281,8 @@ class OrchestratorLoop:
                     first_agent = routes[0][0]
                     logger.info(
                         "Cancelled running [{}] task — user corrected to [{}]",
-                        correction_target, first_agent,
+                        correction_target,
+                        first_agent,
                     )
                     await self._notify_user(
                         msg, f"Interrupted [{correction_target}] — redirecting to [{first_agent}]"
@@ -301,15 +302,15 @@ class OrchestratorLoop:
             raise
         except Exception:
             logger.exception("Orchestrator error processing message")
-            await self.bus.publish_outbound(OutboundMessage(
-                channel=msg.channel,
-                chat_id=msg.chat_id,
-                content="Sorry, I encountered an error routing your request.",
-            ))
+            await self.bus.publish_outbound(
+                OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content="Sorry, I encountered an error routing your request.",
+                )
+            )
 
-    async def _execute_single(
-        self, route: tuple[str, str], msg: InboundMessage
-    ) -> None:
+    async def _execute_single(self, route: tuple[str, str], msg: InboundMessage) -> None:
         """Execute a single agent dispatch."""
         agent_name, task_content = route
 
@@ -318,9 +319,7 @@ class OrchestratorLoop:
         session_dispatches[agent_name] = dispatch_task
 
         try:
-            response_content = await self.dispatch_to_agent(
-                agent_name, task_content, msg=msg
-            )
+            response_content = await self.dispatch_to_agent(agent_name, task_content, msg=msg)
         except asyncio.CancelledError:
             logger.debug("Dispatch to [{}] cancelled for {}", agent_name, msg.session_key)
             return
@@ -329,36 +328,44 @@ class OrchestratorLoop:
             if running.get(agent_name) is dispatch_task:
                 running.pop(agent_name, None)
 
-        self._routing_history.setdefault(msg.session_key, []).append({
-            "user_message": task_content,
-            "agent": agent_name,
-            "response_preview": (response_content or "")[:200],
-        })
+        # Auto-upgrade: if agent hit max iterations, upgrade model and retry once
+        response_content = await self._maybe_auto_upgrade(
+            agent_name, task_content, response_content, msg
+        )
+
+        self._routing_history.setdefault(msg.session_key, []).append(
+            {
+                "user_message": task_content,
+                "agent": agent_name,
+                "response_preview": (response_content or "")[:200],
+            }
+        )
 
         if response_content:
             labeled = f"[{agent_name}] {response_content}"
-            await self.bus.publish_outbound(OutboundMessage(
-                channel=msg.channel,
-                chat_id=msg.chat_id,
-                content=labeled,
-                metadata=msg.metadata or {},
-            ))
+            await self.bus.publish_outbound(
+                OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content=labeled,
+                    metadata=msg.metadata or {},
+                )
+            )
 
-    async def _execute_multi(
-        self, routes: list[tuple[str, str]], msg: InboundMessage
-    ) -> None:
+    async def _execute_multi(self, routes: list[tuple[str, str]], msg: InboundMessage) -> None:
         """Execute multiple agent dispatches in parallel."""
 
         async def _run_one(agent_name: str, task_content: str) -> tuple[str, str | None]:
             try:
-                response = await self.dispatch_to_agent(
-                    agent_name, task_content, msg=msg
+                response = await self.dispatch_to_agent(agent_name, task_content, msg=msg)
+                response = await self._maybe_auto_upgrade(agent_name, task_content, response, msg)
+                self._routing_history.setdefault(msg.session_key, []).append(
+                    {
+                        "user_message": task_content,
+                        "agent": agent_name,
+                        "response_preview": (response or "")[:200],
+                    }
                 )
-                self._routing_history.setdefault(msg.session_key, []).append({
-                    "user_message": task_content,
-                    "agent": agent_name,
-                    "response_preview": (response or "")[:200],
-                })
                 return agent_name, response
             except asyncio.CancelledError:
                 return agent_name, None
@@ -372,12 +379,14 @@ class OrchestratorLoop:
         for agent_name, response_content in results:
             if response_content:
                 labeled = f"[{agent_name}] {response_content}"
-                await self.bus.publish_outbound(OutboundMessage(
-                    channel=msg.channel,
-                    chat_id=msg.chat_id,
-                    content=labeled,
-                    metadata=msg.metadata or {},
-                ))
+                await self.bus.publish_outbound(
+                    OutboundMessage(
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        content=labeled,
+                        metadata=msg.metadata or {},
+                    )
+                )
 
     def _rollback_agent_session(self, agent_name: str, session_key: str) -> None:
         """Remove the last user+assistant turn from a specialist's session after cancellation."""
@@ -392,24 +401,30 @@ class OrchestratorLoop:
             session.messages.pop()
         loop.sessions.save(session)
 
-    def _parse_manual_routing(self, content: str) -> tuple[str | None, str]:
-        """Parse @agent_name prefix for manual routing.
+    def _parse_manual_routing(self, content: str) -> tuple[str | None, str, str | None]:
+        """Parse @agent_name[:model] prefix for manual routing.
 
         Supported formats:
-            @coding fix this bug       → ("coding", "fix this bug")
-            @research look up X        → ("research", "look up X")
-            normal message             → (None, "normal message")
+            @coding fix this bug         → ("coding", "fix this bug", None)
+            @coding:heavy fix this bug   → ("coding", "fix this bug", "heavy")
+            @coding:2 fix this bug       → ("coding", "fix this bug", "2")
+            normal message               → (None, "normal message", None)
         """
         stripped = content.strip()
         if stripped.startswith("@"):
             parts = stripped[1:].split(None, 1)
             if parts:
-                candidate = parts[0].lower()
+                agent_part = parts[0].lower()
+                model_hint: str | None = None
+                if ":" in agent_part:
+                    candidate, model_hint = agent_part.split(":", 1)
+                else:
+                    candidate = agent_part
                 # Verify it's a known agent or a plausible slug
                 if self.registry.get(candidate) or re.match(r"^[a-z][a-z0-9_-]{0,30}$", candidate):
                     task = parts[1] if len(parts) > 1 else ""
-                    return candidate, task
-        return None, content
+                    return candidate, task, model_hint
+        return None, content, None
 
     async def _route_message(self, msg: InboundMessage) -> list[tuple[str, str]]:
         """Determine which agent(s) should handle this message.
@@ -491,10 +506,45 @@ class OrchestratorLoop:
 
             logger.info(
                 "Upgraded [{}] model: {} → {}",
-                agent_name, old_model, new_model_short,
+                agent_name,
+                old_model,
+                new_model_short,
             )
         else:
             logger.info("[{}] already on most powerful model", agent_name)
+
+    async def _maybe_auto_upgrade(
+        self,
+        agent_name: str,
+        task_content: str,
+        response_content: str | None,
+        msg: InboundMessage,
+    ) -> str | None:
+        """Auto-upgrade agent model if it hit max iterations, then retry once."""
+        loop = self.registry.get_loop(agent_name)
+        if not loop or loop.last_iteration_count < loop.max_iterations:
+            return response_content
+
+        profile = self.registry.get(agent_name)
+        if not profile:
+            return response_content
+
+        old_model = (profile.model or self.available_models[0]).split("/")[-1]
+        self._upgrade_agent_model(agent_name)
+        profile = self.registry.get(agent_name)
+        new_model = (profile.model or "?").split("/")[-1] if profile else "?"
+
+        if old_model == new_model:
+            # Already on most powerful model, nothing to do
+            return response_content
+
+        await self._notify_user(
+            msg,
+            f"[{agent_name}] hit iteration limit — upgrading: {old_model} → {new_model}",
+        )
+        # Re-dispatch with upgraded model
+        retry_response = await self.dispatch_to_agent(agent_name, task_content, msg=msg)
+        return retry_response if retry_response else response_content
 
     async def _save_to_shared_memory(self, fact: str) -> None:
         """Append a user fact/preference to the shared global MEMORY.md."""
@@ -511,13 +561,13 @@ class OrchestratorLoop:
         if fact.strip() in existing:
             return
 
-        updated = f"{existing}\n- {fact.strip()}\n" if existing else f"# User Info\n\n- {fact.strip()}\n"
+        updated = (
+            f"{existing}\n- {fact.strip()}\n" if existing else f"# User Info\n\n- {fact.strip()}\n"
+        )
         memory_file.write_text(updated, encoding="utf-8")
         logger.info("Saved to shared memory: {}", fact.strip())
 
-    async def _classify_and_prepare(
-        self, msg: InboundMessage
-    ) -> list[tuple[str, str]]:
+    async def _classify_and_prepare(self, msg: InboundMessage) -> list[tuple[str, str]]:
         """Classify the message and ensure the target agent(s) exist.
 
         Returns a list of (agent_name, task_content) tuples.
@@ -526,8 +576,8 @@ class OrchestratorLoop:
         session_key = msg.session_key
         history = self._routing_history.get(session_key, [])
 
-        # 1. Check for manual @agent routing
-        manual_agent, task_content = self._parse_manual_routing(content)
+        # 1. Check for manual @agent[:model] routing
+        manual_agent, task_content, model_hint = self._parse_manual_routing(content)
         if manual_agent:
             agent_name = manual_agent
             profile = self.registry.get(agent_name)
@@ -540,6 +590,20 @@ class OrchestratorLoop:
                     f"Created new agent: [{agent_name}] — {profile.description}\n"
                     f"  Router: {self._router_model_display()} | Agent: {self._agent_model_display(profile)}",
                 )
+            # Apply manual model selection if provided
+            if model_hint:
+                resolved = self._resolve_model_hint(model_hint)
+                if resolved and resolved != profile.model:
+                    old = (profile.model or self.available_models[0]).split("/")[-1]
+                    profile.model = resolved
+                    self.registry._save_registry()
+                    loop = self.registry.get_loop(agent_name)
+                    if loop:
+                        loop.stop()
+                        self.registry.remove_loop(agent_name)
+                    await self._notify_user(
+                        msg, f"Set [{agent_name}] model: {old} → {resolved.split('/')[-1]}"
+                    )
             await self._notify_user(msg, f"→ {agent_name}")
             return [(agent_name, task_content)]
 
@@ -555,7 +619,10 @@ class OrchestratorLoop:
             if memory_file.exists():
                 shared_mem = memory_file.read_text(encoding="utf-8").strip()
             result = await self.router.llm_classify(
-                content, available, self.provider, self.router_model,
+                content,
+                available,
+                self.provider,
+                self.router_model,
                 routing_history=history,
                 shared_memory=shared_mem or None,
                 available_models=self.available_models if len(self.available_models) > 1 else None,
@@ -567,7 +634,7 @@ class OrchestratorLoop:
             # Process proactively extracted memories
             known_agents = {a.name.lower() for a in available}
             for mem_line in self.router.last_memories:
-                payload = mem_line[len("__memory__:"):]
+                payload = mem_line[len("__memory__:") :]
                 if "|" in payload:
                     fact, _ = payload.rsplit("|", 1)
                 else:
@@ -576,7 +643,7 @@ class OrchestratorLoop:
                 # Strip any agent name that got concatenated without separator
                 for aname in known_agents:
                     if fact.lower().endswith(aname) and len(fact) > len(aname):
-                        fact = fact[:-len(aname)].strip()
+                        fact = fact[: -len(aname)].strip()
                         break
                 if fact:
                     await self._save_to_shared_memory(fact)
@@ -584,7 +651,9 @@ class OrchestratorLoop:
             # Process model upgrades (user dissatisfied with quality)
             for upgrade_agent in self.router.last_upgrades:
                 profile = self.registry.get(upgrade_agent)
-                old_model = (profile.model or self.available_models[0]).split("/")[-1] if profile else "?"
+                old_model = (
+                    (profile.model or self.available_models[0]).split("/")[-1] if profile else "?"
+                )
                 self._upgrade_agent_model(upgrade_agent)
                 profile = self.registry.get(upgrade_agent)
                 new_model = (profile.model or "?").split("/")[-1] if profile else "?"
@@ -644,7 +713,7 @@ class OrchestratorLoop:
 
             elif result and result.startswith("__memory__:"):
                 # Format: __memory__:fact|agent  or  __memory__:fact
-                payload = result[len("__memory__:"):]
+                payload = result[len("__memory__:") :]
                 # Use last pipe as separator between fact and agent name
                 if "|" in payload:
                     fact, route_to = payload.rsplit("|", 1)
@@ -676,7 +745,8 @@ class OrchestratorLoop:
                     msg._correction_cancel_agent = cancel_agent
                     logger.info(
                         "Correction detected: route to [{}], cancel [{}]",
-                        agent_name, cancel_agent,
+                        agent_name,
+                        cancel_agent,
                     )
             elif result and result.startswith("__new__:"):
                 parts = result.split(":", 2)
@@ -685,14 +755,16 @@ class OrchestratorLoop:
 
                 # Enforce max specialists
                 if len(self.registry.list_agents()) >= self.max_specialists:
-                    await self.bus.publish_outbound(OutboundMessage(
-                        channel=msg.channel,
-                        chat_id=msg.chat_id,
-                        content=(
-                            f"Cannot create new agent '{agent_name}': "
-                            f"maximum of {self.max_specialists} specialists reached."
-                        ),
-                    ))
+                    await self.bus.publish_outbound(
+                        OutboundMessage(
+                            channel=msg.channel,
+                            chat_id=msg.chat_id,
+                            content=(
+                                f"Cannot create new agent '{agent_name}': "
+                                f"maximum of {self.max_specialists} specialists reached."
+                            ),
+                        )
+                    )
                     return []
 
                 profile = await self.registry.get_or_create(agent_name, description)
@@ -818,6 +890,9 @@ class OrchestratorLoop:
                 "/stop — Stop all running tasks",
                 "/stop <agent> — Stop a specific agent",
                 "/agents — Show active agents and token usage",
+                "/model — List available models",
+                "/model <agent> <model> — Set agent model",
+                "@agent:model <msg> — Route with model override",
                 "/restart — Restart the bot",
                 "/help — Show available commands",
             ]
@@ -830,6 +905,8 @@ class OrchestratorLoop:
             )
         elif cmd == "/agents":
             await self._handle_agents_command(msg)
+        elif cmd.startswith("/model"):
+            await self._handle_model_command(msg)
         elif cmd.startswith("/stop"):
             parts = cmd.split(None, 1)
             target_agent = parts[1].strip() if len(parts) > 1 else None
@@ -862,7 +939,8 @@ class OrchestratorLoop:
         if not agents:
             await self.bus.publish_outbound(
                 OutboundMessage(
-                    channel=msg.channel, chat_id=msg.chat_id,
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
                     content="No agents registered.",
                 )
             )
@@ -892,19 +970,94 @@ class OrchestratorLoop:
             lines.append(f"{status} **{a.name}** — {a.description}")
             lines.append(token_info)
 
-        lines.append(f"\n**Total: {total_all:,} tokens** (in: {total_prompt:,} / out: {total_completion:,})")
+        lines.append(
+            f"\n**Total: {total_all:,} tokens** (in: {total_prompt:,} / out: {total_completion:,})"
+        )
 
         # Also count orchestrator's own routing LLM calls
-        router_usage = getattr(self, '_router_token_usage', None)
+        router_usage = getattr(self, "_router_token_usage", None)
         if router_usage and router_usage["total_tokens"] > 0:
-            lines.append(
-                f"Router overhead: {router_usage['total_tokens']:,} tokens"
-            )
+            lines.append(f"Router overhead: {router_usage['total_tokens']:,} tokens")
 
         await self.bus.publish_outbound(
             OutboundMessage(
-                channel=msg.channel, chat_id=msg.chat_id,
+                channel=msg.channel,
+                chat_id=msg.chat_id,
                 content="\n".join(lines),
+            )
+        )
+
+    async def _handle_model_command(self, msg: InboundMessage) -> None:
+        """Handle /model [agent] [model_hint] — list or set agent model."""
+        parts = msg.content.strip().split(None, 2)
+
+        if len(parts) == 1:
+            # /model — list available models and current assignments
+            lines = ["**Available models:**"]
+            for i, m in enumerate(self.available_models):
+                lines.append(f"  {i}: {m.split('/')[-1]}  (`{m}`)")
+            agents = self.registry.list_agents()
+            if agents:
+                lines.append("\n**Agent models:**")
+                for a in agents:
+                    model = a.model or self.available_models[0]
+                    lines.append(f"  [{a.name}] → {model.split('/')[-1]}")
+            lines.append("\nUsage: `/model <agent> <model_name_or_index>`")
+            lines.append("Inline: `@agent:model_hint message`")
+            await self.bus.publish_outbound(
+                OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content="\n".join(lines))
+            )
+            return
+
+        if len(parts) < 3:
+            await self.bus.publish_outbound(
+                OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content="Usage: `/model <agent> <model_name_or_index>`",
+                )
+            )
+            return
+
+        agent_name = parts[1].lower()
+        model_hint = parts[2]
+        resolved = self._resolve_model_hint(model_hint)
+        if not resolved:
+            await self.bus.publish_outbound(
+                OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content=f"Unknown model: `{model_hint}`",
+                )
+            )
+            return
+
+        profile = self.registry.get(agent_name)
+        if not profile:
+            await self.bus.publish_outbound(
+                OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content=f"Agent `{agent_name}` not found.",
+                )
+            )
+            return
+
+        old_model = (profile.model or self.available_models[0]).split("/")[-1]
+        profile.model = resolved
+        self.registry._save_registry()
+        # Tear down loop so it recreates with the new model
+        loop = self.registry.get_loop(agent_name)
+        if loop:
+            loop.stop()
+            self.registry.remove_loop(agent_name)
+
+        new_short = resolved.split("/")[-1]
+        await self.bus.publish_outbound(
+            OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=f"Set [{agent_name}] model: {old_model} → {new_short}",
             )
         )
 

@@ -105,9 +105,11 @@ class MemoryStore:
         return ""
 
     def write_long_term(self, content: str) -> None:
+        self.memory_file.parent.mkdir(parents=True, exist_ok=True)
         self.memory_file.write_text(content, encoding="utf-8")
 
     def append_history(self, entry: str) -> None:
+        self.history_file.parent.mkdir(parents=True, exist_ok=True)
         with open(self.history_file, "a", encoding="utf-8") as f:
             f.write(entry.rstrip() + "\n\n")
 
@@ -299,9 +301,7 @@ class MemoryConsolidator:
         """Return the shared consolidation lock for one session."""
         return self._locks.setdefault(session_key, asyncio.Lock())
 
-    async def consolidate_messages(
-        self, messages: list[dict[str, object]]
-    ) -> tuple[bool, str]:
+    async def consolidate_messages(self, messages: list[dict[str, object]]) -> tuple[bool, str]:
         """Archive a selected message chunk into persistent memory.
 
         Returns (success, conversation_summary).

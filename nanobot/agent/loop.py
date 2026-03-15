@@ -110,6 +110,7 @@ class AgentLoop:
 
         # Token usage tracking
         self.token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        self.last_iteration_count = 0  # iterations used in last _run_agent_loop call
 
         self._running = False
         self._mcp_servers = mcp_servers or {}
@@ -210,6 +211,9 @@ class AgentLoop:
         iteration = 0
         final_content = None
         tools_used: list[str] = []
+        # Track last non-empty thought from tool-call responses so we have a
+        # fallback if the model ends without a dedicated text-only reply.
+        last_tool_thought: str | None = None
 
         while iteration < self.max_iterations:
             iteration += 1
@@ -232,6 +236,7 @@ class AgentLoop:
                     thought = self._strip_think(response.content)
                     if thought:
                         await on_progress(thought)
+                        last_tool_thought = thought
                     await on_progress(self._tool_hint(response.tool_calls), tool_hint=True)
 
                 tool_call_dicts = [tc.to_openai_tool_call() for tc in response.tool_calls]
@@ -268,6 +273,11 @@ class AgentLoop:
                 final_content = clean
                 break
 
+        # If the model never produced a text-only response (only tool calls),
+        # fall back to the last thought it emitted alongside a tool call.
+        if final_content is None and last_tool_thought:
+            final_content = last_tool_thought
+
         if final_content is None and iteration >= self.max_iterations:
             logger.warning("Max iterations ({}) reached", self.max_iterations)
             final_content = (
@@ -275,6 +285,7 @@ class AgentLoop:
                 "without completing the task. You can try breaking the task into smaller steps."
             )
 
+        self.last_iteration_count = iteration
         return final_content, tools_used, messages
 
     async def run(self) -> None:
