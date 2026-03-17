@@ -94,7 +94,8 @@ class TaskRouter:
                     "  __new__:category_name:short description\n\n"
                     "User correcting a misroute:\n"
                     "  __correct__:target_agent:cancel_agent\n\n"
-                    "Multiple tasks for different agents:\n"
+                    "Multiple tasks for different agents (executed IN PARALLEL — no "
+                    "dependencies allowed between tasks):\n"
                     "  __multi__\n"
                     "  agent_name_1: task description 1\n"
                     "  agent_name_2: task description 2\n\n"
@@ -146,7 +147,8 @@ class TaskRouter:
                     "domain should have its own specialist.\n"
                     "- Follow-ups go to the SAME agent that handled the earlier related task\n"
                     "- Only use __correct__ for explicit misroute corrections, not topic switches\n"
-                    "- Only use __multi__ for clearly independent tasks for different agents\n"
+                    "- __multi__ tasks run in parallel, so they MUST NOT depend on each other's "
+                    "results. If task B needs output from task A, route both to a single agent\n"
                     "- Do not explain your reasoning, just output the decision"
                 ),
             },
