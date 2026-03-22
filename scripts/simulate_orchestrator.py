@@ -83,7 +83,7 @@ PHASES: list[dict] = [
             "Write pytest tests for the middleware — cover success, error, retry, and correlation ID propagation.",
         ],
         "checks": [
-            ("agent_exists_by_type", "coding"),
+            ("agent_exists_by_type", "fastapi"),
         ],
     },
     # Phase 3: Context Switch

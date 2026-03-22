@@ -760,7 +760,9 @@ class OrchestratorLoop:
                         cancel_agent,
                     )
             elif result and result.startswith("__new__:"):
-                parts = result.split(":", 2)
+                # Take only the first line — router may echo the name on subsequent lines
+                first_line = result.split("\n")[0].strip()
+                parts = first_line.split(":", 2)
                 agent_name = parts[1] if len(parts) > 1 else "general"
                 description = parts[2] if len(parts) > 2 else f"Handles {agent_name} tasks"
 
