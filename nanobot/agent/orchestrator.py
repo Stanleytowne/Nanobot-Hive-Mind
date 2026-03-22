@@ -235,7 +235,7 @@ class OrchestratorLoop:
 
             cmd = msg.content.strip().lower()
             cmd_base = cmd.split()[0] if cmd else ""
-            if cmd_base in ("/stop", "/restart", "/new", "/help", "/agents", "/model"):
+            if cmd_base in ("/stop", "/restart", "/new", "/help", "/agents", "/threads", "/model"):
                 if cmd_base == "/new":
                     self._routing_history.pop(msg.session_key, None)
                 task = asyncio.create_task(self._handle_passthrough(msg))
@@ -337,8 +337,12 @@ class OrchestratorLoop:
             {
                 "user_message": task_content,
                 "agent": agent_name,
-                "response_preview": (response_content or "")[:200],
             }
+        )
+
+        # Fire-and-forget turn summary update
+        asyncio.create_task(
+            self._update_turn_summary(agent_name, task_content, response_content)
         )
 
         if response_content:
@@ -363,8 +367,10 @@ class OrchestratorLoop:
                     {
                         "user_message": task_content,
                         "agent": agent_name,
-                        "response_preview": (response or "")[:200],
                     }
+                )
+                asyncio.create_task(
+                    self._update_turn_summary(agent_name, task_content, response)
                 )
                 return agent_name, response
             except asyncio.CancelledError:
@@ -662,6 +668,11 @@ class OrchestratorLoop:
                         msg, f"⬆️ Upgraded [{upgrade_agent}]: {old_model} → {new_model}"
                     )
 
+            # Inject cross-thread references into the message content
+            ref_context = self._build_ref_context(msg.session_key)
+            if ref_context:
+                content = f"{ref_context}\n\n{content}"
+
             if result and result.startswith("__multi__"):
                 # Multiple tasks for different agents
                 routes = []
@@ -847,6 +858,87 @@ class OrchestratorLoop:
             return f"Agent '{agent_name}' encountered an error processing the task."
 
     # ------------------------------------------------------------------
+    # Turn summaries & cross-thread references
+    # ------------------------------------------------------------------
+
+    async def _update_turn_summary(
+        self, agent_name: str, user_message: str, response: str | None
+    ) -> None:
+        """Generate a 1-2 sentence state summary for a thread (fire-and-forget)."""
+        profile = self.registry.get(agent_name)
+        if not profile:
+            return
+
+        profile.message_count += 1
+
+        truncated_response = (response or "")[:2000]
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Summarize the current state of this thread in 1-2 sentences. "
+                    "Focus on what was accomplished and what's pending. Be concise."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Thread: {agent_name}\n"
+                    f"Previous state: {profile.turn_summary or '(new thread)'}\n"
+                    f"User message: {user_message}\n"
+                    f"Bot response: {truncated_response}"
+                ),
+            },
+        ]
+
+        try:
+            resp = await self.provider.chat_with_retry(
+                messages=messages, tools=[], model=self.router_model
+            )
+            summary = (resp.content or "").strip()
+            if summary:
+                profile.turn_summary = summary
+            # Accumulate router token usage for summary calls
+            for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                self._router_token_usage[k] += (resp.usage or {}).get(k, 0)
+        except Exception:
+            logger.debug("Failed to update turn summary for [{}]", agent_name)
+
+        self.registry._save_registry()
+
+    def _build_ref_context(self, session_key: str) -> str:
+        """Build context string from cross-thread references (__ref__ signals)."""
+        refs = self.router.last_refs
+        if not refs:
+            return ""
+
+        parts: list[str] = []
+        for ref_thread in refs:
+            loop = self.registry.get_loop(ref_thread)
+            if loop:
+                # Get last assistant message from the thread's session
+                session = loop.sessions.get_or_create(session_key)
+                last_content = ""
+                for m in reversed(session.messages):
+                    if m.get("role") == "assistant" and m.get("content"):
+                        last_content = m["content"]
+                        break
+                if last_content:
+                    parts.append(
+                        f"[Context from thread '{ref_thread}']\n{last_content[:3000]}"
+                    )
+                    continue
+
+            # Fallback: use turn_summary
+            profile = self.registry.get(ref_thread)
+            if profile and profile.turn_summary:
+                parts.append(
+                    f"[Context from thread '{ref_thread}']\n{profile.turn_summary}"
+                )
+
+        return "\n\n".join(parts)
+
+    # ------------------------------------------------------------------
     # User notifications
     # ------------------------------------------------------------------
 
@@ -888,11 +980,12 @@ class OrchestratorLoop:
                 "nanobot orchestrator commands:",
                 "/new — Start a new conversation",
                 "/stop — Stop all running tasks",
-                "/stop <agent> — Stop a specific agent",
-                "/agents — Show active agents and token usage",
+                "/stop <thread> — Stop a specific thread",
+                "/threads — Show active threads and token usage",
+                "/agents — Alias for /threads",
                 "/model — List available models",
-                "/model <agent> <model> — Set agent model",
-                "@agent:model <msg> — Route with model override",
+                "/model <thread> <model> — Set thread model",
+                "@thread:model <msg> — Route with model override",
                 "/restart — Restart the bot",
                 "/help — Show available commands",
             ]
@@ -903,8 +996,8 @@ class OrchestratorLoop:
                     content="\n".join(lines),
                 )
             )
-        elif cmd == "/agents":
-            await self._handle_agents_command(msg)
+        elif cmd in ("/agents", "/threads"):
+            await self._handle_threads_command(msg)
         elif cmd.startswith("/model"):
             await self._handle_model_command(msg)
         elif cmd.startswith("/stop"):
@@ -933,15 +1026,15 @@ class OrchestratorLoop:
                 OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=content)
             )
 
-    async def _handle_agents_command(self, msg: InboundMessage) -> None:
-        """Show active agents and token usage."""
+    async def _handle_threads_command(self, msg: InboundMessage) -> None:
+        """Show active threads and token usage."""
         agents = self.registry.list_agents()
         if not agents:
             await self.bus.publish_outbound(
                 OutboundMessage(
                     channel=msg.channel,
                     chat_id=msg.chat_id,
-                    content="No agents registered.",
+                    content="No threads registered.",
                 )
             )
             return
@@ -949,7 +1042,7 @@ class OrchestratorLoop:
         total_prompt = 0
         total_completion = 0
         total_all = 0
-        lines = ["📊 **Active Agents**\n"]
+        lines = ["📊 **Active Threads**\n"]
 
         for a in agents:
             loop = self.registry.get_loop(a.name)
@@ -967,7 +1060,10 @@ class OrchestratorLoop:
                 status = "💤"
                 token_info = "  Tokens: —"
 
-            lines.append(f"{status} **{a.name}** — {a.description}")
+            summary = a.turn_summary or a.description
+            model = (a.model or self.available_models[0]).split("/")[-1] if a.model or self.available_models else "?"
+            lines.append(f"{status} **{a.name}** ({model}) — {summary}")
+            lines.append(f"  Messages: {a.message_count} | Last active: {a.last_active[:16]}")
             lines.append(token_info)
 
         lines.append(

@@ -25,6 +25,7 @@ class TaskRouter:
         self.last_memories: list[str] = []  # __memory__ lines from last classification
         self.last_model_hint: str | None = None  # __model__ hint from last classification
         self.last_upgrades: list[str] = []  # agent names to upgrade model
+        self.last_refs: list[str] = []  # __ref__ thread names from last classification
         # Pre-compile regex patterns
         self._compiled: list[tuple[re.Pattern, str]] = []
         for rule in self._rules:
@@ -60,9 +61,12 @@ class TaskRouter:
             - ``None`` if classification fails.
         """
         agent_list = (
-            "\n".join(f"- {a.name}: {a.description}" for a in available_agents)
+            "\n".join(
+                f"- {a.name}: {a.turn_summary or a.description}"
+                for a in available_agents
+            )
             if available_agents
-            else "(no existing agents)"
+            else "(no active threads)"
         )
 
         # Build conversation history section for context
@@ -70,11 +74,9 @@ class TaskRouter:
         if routing_history:
             lines = []
             for entry in routing_history[-30:]:  # last 30 entries to stay within limits
-                preview = entry.get("response_preview", "")
-                preview_text = f" → {preview}..." if preview else ""
                 lines.append(
                     f"  User: {entry['user_message']}\n"
-                    f"  → Handled by: [{entry['agent']}]{preview_text}"
+                    f"  → Handled by: [{entry['agent']}]"
                 )
             history_section = (
                 "\n\nConversation history (previous messages and which agent handled them):\n"
@@ -85,20 +87,29 @@ class TaskRouter:
             {
                 "role": "system",
                 "content": (
-                    "You are a task router. Given a user message, decide which specialist agent "
-                    "should handle it.\n\n"
+                    "You are a task router. Given a user message, decide which thread "
+                    "should handle it. Each thread is an isolated conversation about a "
+                    "specific task or topic.\n\n"
                     "## Response formats\n\n"
-                    "Basic routing (just the agent name):\n"
-                    "  agent_name\n\n"
-                    "New agent needed:\n"
-                    "  __new__:category_name:short description\n\n"
+                    "Basic routing (just the thread name):\n"
+                    "  thread_name\n\n"
+                    "New thread needed:\n"
+                    "  __new__:task-slug:short description\n\n"
                     "User correcting a misroute:\n"
-                    "  __correct__:target_agent:cancel_agent\n\n"
-                    "Multiple tasks for different agents (executed IN PARALLEL — no "
+                    "  __correct__:target_thread:cancel_thread\n\n"
+                    "Multiple tasks for different threads (executed IN PARALLEL — no "
                     "dependencies allowed between tasks):\n"
                     "  __multi__\n"
-                    "  agent_name_1: task description 1\n"
-                    "  agent_name_2: task description 2\n\n"
+                    "  thread_name_1: task description 1\n"
+                    "  thread_name_2: task description 2\n\n"
+                    "Cross-thread reference (include context from another thread):\n"
+                    "  __ref__:thread_name\n"
+                    "  target_thread\n\n"
+                    "## Thread naming\n\n"
+                    "Thread names must be **specific task slugs** describing the actual work, "
+                    "NOT generic categories. Examples:\n"
+                    "  Good: fix-auth-timeout, vacation-planning-june, crawler-bug-403\n"
+                    "  Bad: coding, research, chat, general\n\n"
                     "## Memory extraction\n\n"
                     "IMPORTANT: Be proactive about detecting memorable information. If the user's "
                     "message contains ANY personal facts, preferences, or context — even if "
@@ -111,11 +122,11 @@ class TaskRouter:
                     "Format (one or more __memory__ lines, then the routing decision):\n"
                     "  __memory__:fact 1\n"
                     "  __memory__:fact 2\n"
-                    "  agent_name\n"
+                    "  thread_name\n"
                     "Write facts in the SAME language the user used. Do not translate.\n\n"
-                    "If a memory fact requires an agent to ACT on it, append |agent_name:\n"
-                    "  __memory__:user timezone is UTC+8|reminder\n"
-                    "  reminder\n\n"
+                    "If a memory fact requires a thread to ACT on it, append |thread_name:\n"
+                    "  __memory__:user timezone is UTC+8|daily-standup\n"
+                    "  daily-standup\n\n"
                     "## Model selection\n\n"
                     "After the routing decision, optionally specify which model to use:\n"
                     "  __model__:model_name_or_index\n"
@@ -124,8 +135,8 @@ class TaskRouter:
                     "(chat, Q&A, greetings) and expensive ones for complex tasks (coding, "
                     "analysis, research). If omitted, uses the most capable model.\n\n"
                     "## Model upgrade on dissatisfaction\n\n"
-                    "If the user shows signs that the current agent quality is insufficient, "
-                    "reply with __upgrade__:agent_name BEFORE the routing decision.\n\n"
+                    "If the user shows signs that the current thread quality is insufficient, "
+                    "reply with __upgrade__:thread_name BEFORE the routing decision.\n\n"
                     "Upgrade triggers:\n"
                     "- Explicit dissatisfaction: 'not good enough', 'quality is poor', "
                     "'写得不好', '太简单了', 'can you do better', '重新写'\n"
@@ -135,27 +146,30 @@ class TaskRouter:
                     "- Escalation language: 'use a better model', 'give me something "
                     "more advanced', 'this needs a smarter approach'\n\n"
                     "Format:\n"
-                    "  __upgrade__:agent_name\n"
-                    "  agent_name\n"
-                    "This upgrades the agent to the next more powerful model and retries. "
-                    "The routing decision should still point to the same agent.\n\n"
+                    "  __upgrade__:thread_name\n"
+                    "  thread_name\n"
+                    "This upgrades the thread to the next more powerful model and retries. "
+                    "The routing decision should still point to the same thread.\n\n"
                     "## Rules\n\n"
-                    "- category_name: short lowercase slug (e.g. 'coding', 'research', 'reminder')\n"
-                    "- ALWAYS create specialized agents for distinct task types. Do NOT route "
-                    "coding tasks to a 'chat' or 'general' agent — create a 'coding' agent. "
-                    "Do NOT route reminders to 'chat' — create a 'reminder' agent. Each task "
-                    "domain should have its own specialist.\n"
-                    "- Follow-ups go to the SAME agent that handled the earlier related task\n"
+                    "- Thread names: short lowercase slugs describing the specific task "
+                    "(e.g. 'fix-auth-timeout', 'plan-vacation-june', 'debug-404-api')\n"
+                    "- ALWAYS create a new thread for each distinct task or topic. Do NOT "
+                    "reuse threads for unrelated work.\n"
+                    "- Each thread's state summary tells you what it's currently working on "
+                    "— use it to decide routing\n"
+                    "- Follow-ups go to the SAME thread that handled the earlier related task\n"
                     "- Only use __correct__ for explicit misroute corrections, not topic switches\n"
                     "- __multi__ tasks run in parallel, so they MUST NOT depend on each other's "
-                    "results. If task B needs output from task A, route both to a single agent\n"
+                    "results. If task B needs output from task A, route both to a single thread\n"
+                    "- Use __ref__ when the user's message references results from another thread "
+                    "(e.g. 'use the data from the crawler' while talking to a different thread)\n"
                     "- Do not explain your reasoning, just output the decision"
                 ),
             },
             {
                 "role": "user",
                 "content": (
-                    f"Available agents:\n{agent_list}"
+                    f"Active threads:\n{agent_list}"
                     + (
                         f"\n\nAvailable models (0=cheapest, {len(available_models) - 1}=most capable):\n"
                         + "\n".join(f"  {i}: {m}" for i, m in enumerate(available_models))
@@ -180,10 +194,11 @@ class TaskRouter:
             if not raw:
                 return None
 
-            # Parse multi-line response: extract __memory__ lines, __tier__, and routing
+            # Parse multi-line response: extract signals and routing
             lines = raw.split("\n")
             memory_lines: list[str] = []
             upgrade_lines: list[str] = []
+            ref_lines: list[str] = []
             model_hint: str | None = None
             routing_lines: list[str] = []
 
@@ -197,6 +212,8 @@ class TaskRouter:
                     model_hint = stripped.split(":", 1)[1].strip()
                 elif stripped.startswith("__upgrade__:"):
                     upgrade_lines.append(stripped)
+                elif stripped.startswith("__ref__:"):
+                    ref_lines.append(stripped.split(":", 1)[1].strip())
                 else:
                     routing_lines.append(stripped)
 
@@ -204,6 +221,7 @@ class TaskRouter:
             self.last_memories = memory_lines
             self.last_model_hint = model_hint
             self.last_upgrades = [u.split(":", 1)[1].strip() for u in upgrade_lines if ":" in u]
+            self.last_refs = ref_lines
 
             # Reconstruct the routing decision (non-memory, non-tier lines)
             result = "\n".join(routing_lines).strip()

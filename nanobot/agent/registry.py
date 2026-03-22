@@ -28,6 +28,8 @@ class AgentProfile:
     model: str | None = None  # override model (or use default)
     tools: list[str] | None = None  # override tool list (or use all)
     system_prompt_extra: str = ""  # agent-specific instructions
+    turn_summary: str = ""  # current state summary (updated after each turn)
+    message_count: int = 0  # number of messages handled
 
     def touch(self) -> None:
         """Update last_active timestamp."""
@@ -202,5 +204,6 @@ class AgentRegistry:
             status_icon = {"active": "[active]", "suspended": "[suspended]", "idle": "[idle]"}.get(
                 p.status, f"[{p.status}]"
             )
-            lines.append(f"- {p.name} {status_icon}: {p.description}")
+            summary = p.turn_summary or p.description
+            lines.append(f"- {p.name} {status_icon}: {summary}")
         return "\n".join(lines)
