@@ -180,7 +180,8 @@ class TelegramChannel(BaseChannel):
         BotCommand("start", "Start the bot"),
         BotCommand("new", "Start a new conversation"),
         BotCommand("stop", "Stop the current task"),
-        BotCommand("agents", "Show active agents and token usage"),
+        BotCommand("agents", "Show active threads and token usage"),
+        BotCommand("threads", "Show active threads and token usage"),
         BotCommand("help", "Show available commands"),
         BotCommand("restart", "Restart the bot"),
     ]
@@ -254,6 +255,7 @@ class TelegramChannel(BaseChannel):
         self._app.add_handler(CommandHandler("new", self._forward_command))
         self._app.add_handler(CommandHandler("stop", self._forward_command))
         self._app.add_handler(CommandHandler("agents", self._forward_command))
+        self._app.add_handler(CommandHandler("threads", self._forward_command))
         self._app.add_handler(CommandHandler("restart", self._forward_command))
         self._app.add_handler(CommandHandler("help", self._on_help))
 
