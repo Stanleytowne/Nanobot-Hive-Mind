@@ -158,6 +158,8 @@ class TaskRouter:
                     "- Each thread's state summary tells you what it's currently working on "
                     "— use it to decide routing\n"
                     "- Follow-ups go to the SAME thread that handled the earlier related task\n"
+                    "- Feedback or comments about a thread's response (e.g. 'too long', "
+                    "'reformat this', 'send as PDF') are follow-ups — route to that thread\n"
                     "- Only use __correct__ for explicit misroute corrections, not topic switches\n"
                     "- __multi__ tasks run in parallel, so they MUST NOT depend on each other's "
                     "results. If task B needs output from task A, route both to a single thread\n"
