@@ -192,6 +192,24 @@ class AgentLoop:
         return re.sub(r"<think>[\s\S]*?</think>", "", text).strip() or None
 
     @staticmethod
+    def _clean_tool_markup(text: str | None) -> str | None:
+        """Remove provider-specific tool call markup leaked into content.
+
+        Some models (e.g. Kimi/Moonshot) embed raw tool call delimiters like
+        <|tool_call_start|>...<|tool_call_end|> or <|im_start|>...<|im_end|>
+        in the content field alongside actual tool_calls.  Strip them so users
+        never see raw markup.
+        """
+        if not text:
+            return None
+        # Remove <|...|> delimited blocks (Kimi, ChatGLM, etc.)
+        text = re.sub(r"<\|tool_call_start\|>[\s\S]*?<\|tool_call_end\|>", "", text)
+        text = re.sub(r"<\|im_start\|>[\s\S]*?<\|im_end\|>", "", text)
+        # Remove any remaining <|...|> tags
+        text = re.sub(r"<\|[^|]+\|>", "", text)
+        return text.strip() or None
+
+    @staticmethod
     def _tool_hint(tool_calls: list) -> str:
         """Format tool calls as concise hint, e.g. 'web_search("query")'."""
 
@@ -236,7 +254,7 @@ class AgentLoop:
 
             if response.has_tool_calls:
                 if on_progress:
-                    thought = self._strip_think(response.content)
+                    thought = self._clean_tool_markup(self._strip_think(response.content))
                     if thought:
                         await on_progress(thought)
                         last_tool_thought = thought
@@ -262,7 +280,7 @@ class AgentLoop:
                         messages, tool_call.id, tool_call.name, result
                     )
             else:
-                clean = self._strip_think(response.content)
+                clean = self._clean_tool_markup(self._strip_think(response.content))
                 # Don't persist error responses to session history — they can
                 # poison the context and cause permanent 400 loops (#1303).
                 if response.finish_reason == "error":
