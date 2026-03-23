@@ -611,6 +611,12 @@ class OrchestratorLoop:
                         msg, f"Set [{agent_name}] model: {old} → {resolved.split('/')[-1]}"
                     )
             await self._notify_user(msg, f"→ {agent_name}")
+            # Inject cross-thread refs from @mentions in the task content
+            inline_refs = self._extract_inline_refs(task_content)
+            if inline_refs:
+                ref_context = self._build_ref_context(msg.session_key, inline_refs)
+                if ref_context:
+                    task_content = f"{ref_context}\n\n{task_content}"
             return [(agent_name, task_content)]
 
         # 2. Try deterministic rule matching
@@ -668,8 +674,9 @@ class OrchestratorLoop:
                         msg, f"⬆️ Upgraded [{upgrade_agent}]: {old_model} → {new_model}"
                     )
 
-            # Inject cross-thread references into the message content
-            ref_context = self._build_ref_context(msg.session_key)
+            # Inject cross-thread references (explicit @mentions + router __ref__)
+            inline_refs = self._extract_inline_refs(content)
+            ref_context = self._build_ref_context(msg.session_key, inline_refs)
             if ref_context:
                 content = f"{ref_context}\n\n{content}"
 
@@ -908,9 +915,37 @@ class OrchestratorLoop:
 
         self.registry._save_registry()
 
-    def _build_ref_context(self, session_key: str) -> str:
-        """Build context string from cross-thread references (__ref__ signals)."""
-        refs = self.router.last_refs
+    def _extract_inline_refs(self, content: str) -> list[str]:
+        """Extract @thread-name mentions from message body as explicit refs.
+
+        Skips the leading @mention (that's manual routing, not referencing).
+        Only returns names that match registered threads.
+        """
+        known = {p.name for p in self.registry.list_agents()}
+        if not known:
+            return []
+
+        mentions = re.findall(r"@([a-z][a-z0-9_-]{0,30})", content)
+        if not mentions:
+            return []
+
+        # If message starts with @, the first mention is routing — skip it
+        if content.strip().startswith("@"):
+            mentions = mentions[1:]
+
+        return [m for m in mentions if m in known]
+
+    def _build_ref_context(
+        self, session_key: str, explicit_refs: list[str] | None = None
+    ) -> str:
+        """Build context string from cross-thread references.
+
+        Merges router LLM ``__ref__`` signals with explicit ``@thread-name``
+        mentions extracted from the user message.
+        """
+        refs = list(dict.fromkeys(
+            (explicit_refs or []) + self.router.last_refs
+        ))  # dedupe, preserving order
         if not refs:
             return ""
 
